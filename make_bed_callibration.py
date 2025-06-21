@@ -1,3 +1,5 @@
+"""Utility to generate Z-offset calibration G-code."""
+
 from pathlib import Path
 
 def generate_z_offset_calibration_gcode(
@@ -13,11 +15,29 @@ def generate_z_offset_calibration_gcode(
     nozzle_temp=215,
     print_speed=20,
     travel_speed=150,
-    start_x=10,
-    start_y=10,
+    start_x=None,
+    start_y=None,
     z_offset_min=-0.3,
-    z_offset_max=-0.05
+    z_offset_max=-0.05,
+    bed_size_x=250,
+    bed_size_y=250,
+    bed_size_z=250,
 ):
+    """Generate a grid of squares with varying Z offsets.
+
+    Parameters mirror most common slicer settings. The ``start_x`` and
+    ``start_y`` values default to centering the pattern on the bed when not
+    provided. ``bed_size_x`` and ``bed_size_y`` reflect the printable area of
+    the printer and are set for the Anycubic Kobra S1 by default.
+    """
+
+    if start_x is None or start_y is None:
+        grid_width = x_count * square_size + (x_count - 1) * spacing
+        grid_height = y_count * square_size + (y_count - 1) * spacing
+        if start_x is None:
+            start_x = (bed_size_x - grid_width) / 2
+        if start_y is None:
+            start_y = (bed_size_y - grid_height) / 2
     def calculate_extrusion(length, layer_height, line_width, extrusion_multiplier=1.0):
         return (length * line_width * layer_height * extrusion_multiplier) / (1.75**2 * 3.1416 / 4)
 
@@ -79,5 +99,5 @@ def generate_z_offset_calibration_gcode(
     output_path.write_text("\n".join(lines))
     return output_path
 
-# Example usage:
-generate_z_offset_calibration_gcode()
+if __name__ == "__main__":
+    generate_z_offset_calibration_gcode()
