@@ -1,103 +1,135 @@
-"""Utility to generate Z-offset calibration G-code."""
+#!/usr/bin/env python3
+"""
+Anycubic Kobra S1 – Z-offset calibration generator
+Creates a grid of first-layer squares, each printed at
+a different Z-offset, wrapped in the proprietary header
+blocks required by the firmware.
+"""
 
 from pathlib import Path
+from datetime import datetime
+import math, argparse, textwrap
 
-def generate_z_offset_calibration_gcode(
-    x_count=4,
-    y_count=3,
-    square_size=20,
-    square_height=1.0,
-    spacing=5,
-    layer_height=0.2,
-    line_width=0.4,
-    extrusion_multiplier=1.0,
-    bed_temp=60,
-    nozzle_temp=215,
-    print_speed=20,
-    travel_speed=150,
-    start_x=None,
-    start_y=None,
-    z_offset_min=-0.3,
-    z_offset_max=0.0,
-    bed_size_x=250,
-    bed_size_y=250,
-    bed_size_z=250,
-):
-    """Generate a grid of squares with varying Z offsets.
+# ---------- helper functions ----------
+def e_len(dist, h, w, mult=1.0, d=1.75):
+    """Filament length for a given line segment."""
+    return dist * w * h * mult / (math.pi * (d / 2) ** 2)
 
-    Parameters mirror most common slicer settings. The ``start_x`` and
-    ``start_y`` values default to centering the pattern on the bed when not
-    provided. ``bed_size_x`` and ``bed_size_y`` reflect the printable area of
-    the printer and are set for the Anycubic Kobra S1 by default.
-    """
+def mm(val):        # terse float formatting
+    return f"{val:.3f}"
 
-    if start_x is None or start_y is None:
-        grid_width = x_count * square_size + (x_count - 1) * spacing
-        grid_height = y_count * square_size + (y_count - 1) * spacing
-        if start_x is None:
-            start_x = (bed_size_x - grid_width) / 2
-        if start_y is None:
-            start_y = (bed_size_y - grid_height) / 2
-    def calculate_extrusion(length, layer_height, line_width, extrusion_multiplier=1.0):
-        return (length * line_width * layer_height * extrusion_multiplier) / (1.75**2 * 3.1416 / 4)
+# ---------- g-code generator ----------
+def build(cfg):
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    layers = int(cfg['square_height'] / cfg['layer_height'])
 
-    # Compute evenly spaced Z-offsets
-    z_offsets = [
-        round(z_offset_min + i * (z_offset_max - z_offset_min) / (x_count * y_count - 1), 3)
-        for i in range(x_count * y_count)
+    g = [
+        # ===== required Anycubic header =====
+        "; HEADER_BLOCK_START",
+        f"; generated {now}",
+        f"; grid {cfg['x']}x{cfg['y']} squares  z:{cfg['z_min']}→{cfg['z_max']}",
+        "; filament_diameter: 1.75",
+        f"; max_z_height: {cfg['square_height']:.2f}",
+        "; HEADER_BLOCK_END",
+        "",
+        # ===== everything below actually runs =====
+        "; EXECUTABLE_BLOCK_START",
+        "G90", "G21", "M83",
+        f"G9111 bedTemp={cfg['bed']} extruderTemp={cfg['nozzle']}",
+        f"M190 S{cfg['bed']}",
+        f"M109 S{cfg['nozzle']}",
+        "G28", "G1 Z5 F3000",
+        "G1 X5 Y5 F6000",
+        "G1 Z0.3 F600",
+        "G1 E2 F120", "G92 E0",
     ]
 
-    lines = [
-        "; Z Offset Calibration G-code",
-        "G90 ; Absolute positioning",
-        "M82 ; Absolute extrusion mode",
-        f"M104 S{nozzle_temp}",
-        f"M140 S{bed_temp}",
-        f"M109 S{nozzle_temp}",
-        f"M190 S{bed_temp}",
-        "G28 ; Home all axes",
-        "G1 Z5 F5000 ; Lift Z",
-    ]
+    # grid placement
+    grid_w = cfg['x'] * cfg['size'] + (cfg['x'] - 1) * cfg['gap']
+    grid_h = cfg['y'] * cfg['size'] + (cfg['y'] - 1) * cfg['gap']
+    start_x = (cfg['bed_x'] - grid_w) / 2
+    start_y = (cfg['bed_y'] - grid_h) / 2
 
-    e_position = 0.0
-    current_y = start_y
+    total = cfg['x'] * cfg['y']
+    zvals = [round(cfg['z_min'] + i * (cfg['z_max'] - cfg['z_min']) / (total - 1), 3)
+             for i in range(total)]
+
     idx = 0
-
-    for row in range(y_count):
-        current_x = start_x
-        for col in range(x_count):
-            z_offset = z_offsets[idx]
+    for row in range(cfg['y']):
+        for col in range(cfg['x']):
+            zoff = zvals[idx]
             idx += 1
-            lines.append(f"; Square {idx} with Z offset {z_offset}")
-            layers = int(square_height / layer_height)
-            for layer in range(layers):
-                z = (layer + 1) * layer_height + z_offset
-                lines.append(f"G1 Z{z:.3f} F100")
-                path = [
-                    (current_x, current_y),
-                    (current_x + square_size, current_y),
-                    (current_x + square_size, current_y + square_size),
-                    (current_x, current_y + square_size),
-                    (current_x, current_y),
+            ox = start_x + col * (cfg['size'] + cfg['gap'])
+            oy = start_y + row * (cfg['size'] + cfg['gap'])
+
+            g.append(f";--- Square {idx}  Z={zoff:+.3f} ---")
+            g.append(f"M117 Z {zoff:+.2f}")          # LCD message
+
+            for ly in range(layers):
+                z = (ly + 1) * cfg['layer_height'] + zoff
+                g.append(f"G1 Z{mm(z)} F600")
+                loop = [
+                    (ox, oy),
+                    (ox + cfg['size'], oy),
+                    (ox + cfg['size'], oy + cfg['size']),
+                    (ox, oy + cfg['size']),
+                    (ox, oy),
                 ]
-                lines.append(f"G1 X{path[0][0]} Y{path[0][1]} F{travel_speed * 60}")
-                for (x, y) in path[1:]:
-                    length = ((x - path[0][0])**2 + (y - path[0][1])**2)**0.5
-                    extrude = calculate_extrusion(length, layer_height, line_width, extrusion_multiplier)
-                    e_position += extrude
-                    lines.append(f"G1 X{x} Y{y} E{e_position:.5f} F{print_speed * 60}")
-                    path[0] = (x, y)
-            current_x += square_size + spacing
-        current_y += square_size + spacing
+                g.append(f"G1 X{mm(loop[0][0])} Y{mm(loop[0][1])} F{cfg['travel']*60}")
+                px, py = loop[0]
+                for x, y in loop[1:]:
+                    e = e_len(math.hypot(x - px, y - py),
+                              cfg['layer_height'], cfg['line_width'],
+                              cfg['mult'])
+                    g.append(f"G1 X{mm(x)} Y{mm(y)} E{mm(e)} F{cfg['print']*60}")
+                    px, py = x, y
+                g.append("G92 E0")                    # reset per layer
 
-    lines.append("G1 Z20 F1000 ; Lift Z")
-    lines.append("M104 S0 ; Turn off hotend")
-    lines.append("M140 S0 ; Turn off bed")
-    lines.append("M84 ; Disable motors")
+    # ---------- copy your slicer’s end-gcode ----------
+    g += [
+        "G1 Z20 F900",
+        "G92 E0",
+        "G1 E-2 F3000",
+        "G1 F12000",
+        "G1 X44",
+        "G1 Y270",
+        "M140 S0", "M104 S0",
+        "M106 P1 S0", "M106 P2 S0", "M106 P3 S0",
+        "M84",
+        "; EXECUTABLE_BLOCK_END"
+    ]
 
-    output_path = Path("z_offset_calibration.gcode")
-    output_path.write_text("\n".join(lines))
-    return output_path
+    out = Path("z_offset_calibration.gcode")
+    out.write_text("\n".join(g))
+    return out
 
+# ---------- CLI ----------
 if __name__ == "__main__":
-    generate_z_offset_calibration_gcode()
+    ap = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=textwrap.dedent("""\
+        Generate a Z-offset calibration grid for the Anycubic Kobra S1.
+
+        Example:
+          python make_z_grid.py --x 5 --y 4 --min -0.4 --max 0.05 \
+                                --bed 65 --nozzle 220
+        """))
+    ap.add_argument("--x",      type=int,   default=4, help="Squares in X")
+    ap.add_argument("--y",      type=int,   default=3, help="Squares in Y")
+    ap.add_argument("--min",    type=float, default=-0.30, help="Lowest Z-offset")
+    ap.add_argument("--max",    type=float, default= 0.00, help="Highest Z-offset")
+    ap.add_argument("--bed",    type=int,   default=60, help="Bed °C")
+    ap.add_argument("--nozzle", type=int,   default=215, help="Nozzle °C")
+    args = ap.parse_args()
+
+    cfg = dict(
+        x=args.x, y=args.y,
+        z_min=args.min, z_max=args.max,
+        bed=args.bed, nozzle=args.nozzle,
+        size=20, gap=5, square_height=1.0,
+        layer_height=0.2, line_width=0.4, mult=1.0,
+        print=20, travel=150,
+        bed_x=250, bed_y=250,
+    )
+    outfile = build(cfg)
+    print("Wrote", outfile)
