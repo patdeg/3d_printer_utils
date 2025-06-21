@@ -3,8 +3,8 @@
 from pathlib import Path
 
 def generate_z_offset_calibration_gcode(
-    x_count=3,
-    y_count=2,
+    x_count=4,
+    y_count=3,
     square_size=20,
     square_height=1.0,
     spacing=5,
@@ -18,7 +18,7 @@ def generate_z_offset_calibration_gcode(
     start_x=None,
     start_y=None,
     z_offset_min=-0.3,
-    z_offset_max=-0.05,
+    z_offset_max=0.0,
     bed_size_x=250,
     bed_size_y=250,
     bed_size_z=250,
